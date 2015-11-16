@@ -1,0 +1,203 @@
+---
+title: "HarvardX + MITx - Year 1 Results (2012 - 2013)"
+author: "John Montroy"
+output: html_document
+---
+
+After a successful first year, Harvard and MIT have released their dataset for 17 courses run during the 2012 - 2013 academic year through the online edX platform. The data are user-level records of student performance, on a course-by-course basis. Sample variables included user-entered demographic data (year of birth, country), as well as 
+collected click/interaction data (number of chapters read, number of forum posts). The data also include a final grade, where applicable.
+
+Questions to be answered include:
+
+* How did student engagement drop off between various subsets, such as gender or age? Can we identify any differences in engagement?
+* How did student performance vary between subsets?
+* What was the relationship between online engagement (measured through interaction events) and final grade?
+
+These questions are a modest subset of questions that could be asked, but they naturally lead to further, more complex questions that will be discussed at the end.
+
+## Wrangling
+
+The first steps were basic wrangling: obtain dataset, verify a correct import, and begin cleaning.
+```{r eval = FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gtools)
+library(grid)
+library(gridExtra)
+library(ggthemes)
+library(scales)
+
+fileloc = "D:/Learning/NYC-DSA/Project 1/datasets/HMXPC13_DI_v2_5-14-14.csv"
+
+edx.head <- read.csv(fileloc, nrows = 1000)
+classes <- sapply(edx.head, class)
+
+classes[c("LoE_DI","YoB","gender","final_cc_cname_DI",
+          "userid_DI","course_id","start_time_DI","last_event_DI")] <- "character" 
+
+edx <- read.csv(fileloc, colClasses = classes)
+edx.bk <- edx # make a backup for quick workability
+dim(edx) # check that dimensions match up with raw (641338 in raw with header row)
+```
+
+Other basic data wrangling included:
+
+* Getting rid of bad records (per HarvardX/MITx spec)
+* Dealing with blanks vs NA
+* Parsing out new columns based on course_id
+* Creating bins for age
+
+
+```{r eval = FALSE}
+edx$roles = NULL
+edx.incomplete <- filter(edx, !is.na(incomplete_flag))
+edx <- filter(edx, is.na(incomplete_flag))
+edx$incomplete_flag = NULL; edx.incomplete$incomplete_flag = NULL; 
+
+edx <- edx %>% mutate(YoB = ifelse(YoB == "", NA, as.character(YoB)))
+edx <- edx %>% mutate(gender = ifelse(gender == "", NA, as.character(gender)))
+edx <- edx %>% mutate(LoE_DI = ifelse(LoE_DI == "", NA, as.character(LoE_DI)))
+edx <- edx %>% mutate(start_time_DI = ifelse(start_time_DI == "", NA, as.character(start_time_DI)))
+edx <- edx %>% mutate(last_event_DI = ifelse(last_event_DI == "", NA, as.character(last_event_DI)))
+edx <- edx %>% mutate(final_cc_cname_DI = ifelse(final_cc_cname_DI == "", NA, as.character(final_cc_cname_DI)))
+
+edx <- mutate(edx, start_time_DI = as.Date(start_time_DI, format = "%Y-%m-%d")) %>%
+  mutate(., last_event_DI = as.Date(last_event_DI, format = "%Y-%m-%d"))
+
+edx <- separate(edx, course_id, into = c("school", "course", "semester"), sep = "/", remove=TRUE)
+
+edx <- edx %>% mutate(active_length = as.integer(last_event_DI - start_time_DI))
+
+edx <- edx %>%
+  mutate(age_cat = 
+    ifelse(!is.na(edx$YoB), as.character(cut(
+     as.integer(Sys.Date() - as.Date(as.character(edx$YoB)[!is.na(edx$YoB)], format = "%Y")) / 365, 
+     breaks = c(0,18,25,35,45,65,Inf),
+     labels = c("0 - 18", "18 - 25", "25 - 35", "35 - 45", "45 - 65", "65+")
+    )), NA)
+  )
+
+```
+
+The below wrangling is to get my data in a form appropriate for time series visualisation. This unfortunately involved some repetition that I will most likely try to turn into a nice function in the future. Only one iteration shown here for brevity, see full list in code.
+
+
+```{r eval = FALSE}
+
+# by education level
+edx.edlevel <- edx %>%
+  filter(active_length > 0, active_length < 120) %>%
+  filter(!is.na(LoE_DI)) %>%
+  group_by(LoE_DI, active_length) %>%
+  summarise(count = n())
+
+edx.edlevel.tots <- edx %>%
+  filter(active_length > 0, active_length < 120) %>%
+  filter(!is.na(LoE_DI)) %>%
+  group_by(LoE_DI) %>%
+  summarise(totcount = n())
+
+edx.edlevel <- edx.edlevel %>% inner_join(edx.edlevel.tots, by = c("LoE_DI"))
+edx.edlevel <- edx.edlevel %>% mutate(perc = count / totcount)
+```
+
+## Visualisations
+
+### Engagement
+
+The first set of visualisations aim to answer how user engagement falls off over time. This was accomplished by creating a variable (above) corresponding to the date difference between course registration and the last user interaction with said course. We expect engagement to fall off rapidly after the original registration, but differences based on gender, age, and level of education are worth exploring. 
+
+Also worth asking is the effectiveness of campaigns to retain user engagement (email blasts, events). This yielded some possibly frutiful avenues for further investigation.
+
+```{r eval = FALSE}
+gg.gender <- ggplot(edx.gender, aes(x = active_length, y = count, color = gender)) +
+  geom_line() +
+  labs(
+    title = "User Engagement Attrition Rate (by gender)", 
+    y = "Percentage of Total Users", x = "Days Active") +
+  theme_bw()
+
+gg.loe <- ggplot(edx.edlevel, aes(x = active_length, y = perc, color = LoE_DI)) +
+  geom_line() +
+  labs(title = "User Engagement Attrition Rate (by level of education)", 
+    y = "Percentage of Total Users",x = "Days Active") +
+  theme_bw() +
+  
+
+grid.arrange(gg.gender, gg.loe, nrow=2)
+
+# facet wrap for age category
+ggplot(edx.age, aes(x = active_length, y = perc)) +
+  geom_line() +
+  labs(title = "User Engagement Attrition Rate (by age)", 
+       y = "Percentage of Total Users",x = "Days Active") +
+  theme_bw() +
+  facet_wrap(~age_cat)
+```
+
+![User Engagement (gender, level of education)](images/usereng.jpg)
+![User Engagement (age)](images/usereng_age.jpg)
+
+Unfortunately, there appears to be very little variation in user engagement between these subsets, although more robust hypothesis testing would aid in investigating. One thing worth noting is the comparatively large fluctuations in engagement in the lowest and highest age categories. A controlled experiment investigating the effect of email campaigns and events on user engagement would likely be aided by the usage of these graphs, as you would expect to see a bump in engagement (or not) depending on your targeted demographic.
+
+### Performance
+
+The remaining four plots investigated other elements of the data pertaining to user performance.
+
+* The first plot shows certificates issued by count per gender and level of education. Worth noting is the ratio of male vs female certificates per educational level. The ratio seems to skew male at lower educational levels, but equalizes as the educational level becomes higher.
+
+* The second plot plots the number of unique event interactions a user performed (log-scaled for outliers) versus the total number of days they interacted with the course. The color scale reflects grade, where 0 < grade < 1. As one would expect, the more days someone interacts with the material, the more events they initiates. Further, an increase in both of those consistently correlates to a higher grade received upon completion.
+
+    + Worth noting is the distinct group of high performers just above the the main curve. These users logged in to the course more, but did less once logged in. They performed the strongest of anyone, indicating users who were the least reliant on course materials while still performing well.
+
+
+* The third graph is a jitter plot of completed chapters versus forum posts, scaled for final grade. As with the above graph, the more a user interacted with forum posts and chapters, the higher their grade was, which is to be expected. Drawing a horizontal line at any point will show you the rate of change in grade with chapters completed held constant -- there are users who didn't complete all chapters, but still actively engaged in the forums and received high marks. This is another interesting set of outliers.
+  
+    + The most interesting is the rather strong horizontal lines around y = 19.
+
+
+* The final graph is a violin plot of grades by education and gender. As with the bar chart of certificates, we see better female performance at lower educational levels, whereas things equalize at higher levels. As one would expect, higher education levels correspond with a higher proportion of high marks received, as exhibited by the fatter heads of the violin charts for Masters and PHDs.
+
+```{r eval = FALSE}
+# number of completions
+gg.bar <- ggplot(subset(edx, certified == 1 & !is.na(LoE_DI) & gender %in% c("m","f")), aes(x = LoE_DI)) + 
+  geom_bar(stat = "bin", position = "dodge", aes(fill = gender)) +
+  labs(title = "Certifications Issued (by education and gender)", 
+       y = "Number Certified",x = "Level of Education") +
+  theme_economist()
+
+# interactivity with color scaling for final grade
+gg.point <- ggplot(subset(edx, grade > 0 & grade <= 1), aes(x = log(nevents), y = ndays_act)) +
+  geom_point(aes(color = grade)) + 
+  scale_color_gradient() +
+  labs(title = "User Interactivity (color-scaled by final grade)", 
+       y = "Number of Days Active ",x = "Number of interaction events (log)") +
+  theme_economist() + scale_fill_economist()
+
+
+# interactivity re: chapters and forum posts -- why such convergences of chapters read?
+gg.jitter <- ggplot(subset(edx, grade > 0 & grade <= 1), aes(x = nforum_posts, y = nchapters)) +
+  geom_jitter(aes(color = grade)) + 
+  scale_color_gradient() +
+  labs(title = "User Interactivity (color-scaled by final grade)", 
+       y = "Number of chapters completed ", x = "Number of forum posts") +
+  theme_economist() + scale_fill_economist()
+
+
+# violin of grade by education
+gg.violin <- ggplot(subset(edx, !is.na(LoE_DI) & grade > 0 & grade <= 1 & gender %in% c("f","m")), 
+       aes(x = factor(LoE_DI), y = grade, fill = gender)) +
+  geom_violin() +
+  labs(title = "Grade (by education, gender)", 
+       y = "Grade", x = "Level of Education") +
+  theme_economist() ##+ scale_fill_economist()
+```
+![4 EdX Plots](images/4plots.jpg)
+
+## Conclusion
+
+In conclusion, the dataset did not reveal any unexpected differences in engagement across different categories. Retention is a problem with online courses regardless of any other factor. 
+ 
+Further, higher interaction levels corresponded with higher grades, but there are users who are not engaged with the community who nonetheless receive high marks. These are users worth trying to reach out to.
+
